@@ -76,11 +76,11 @@ def ask_pct(label):
         raw = input(f"  {label} usage % shown on claude.ai: ").strip().rstrip("%")
         try:
             v = float(raw)
-            if 0 < v < 100:
+            if 0 < v <= 100:
                 return v / 100
         except ValueError:
             pass
-        print("  Enter a number between 1 and 99.")
+        print("  Enter a number between 1 and 100.")
 
 
 def _show_drift(prev, sess_limit, week_limit):
@@ -111,11 +111,11 @@ def run():
 
     sess_x = sess["input"] + sess["output"] + sess["cw"]
     sess_y = sess["cr"]
-    sess_w = sess_x + int(sess_y * WEIGHT_CACHE_READ_SESSION)
+    sess_w = sess_x + round(sess_y * WEIGHT_CACHE_READ_SESSION)
 
     week_x = week["input"] + week["output"] + week["cw"]
     week_y = week["cr"]
-    week_w = week_x + int(week_y * WEIGHT_CACHE_READ_WEEKLY)
+    week_w = week_x + round(week_y * WEIGHT_CACHE_READ_WEEKLY)
 
     print(f"  Session tokens: {fmt(sess_w)}")
     print(f"  Weekly  tokens: {fmt(week_w)}\n")
@@ -136,6 +136,12 @@ def run():
     # Single-point estimates
     sess_limit = round(sess_w / sess_pct)
     week_limit = round(week_w / week_pct)
+
+    sess_check = sess_w / sess_limit * 100
+    week_check = week_w / week_limit * 100
+    print(f"\n  Round-trip check (TUI will display these):")
+    print(f"    Session: entered {sess_pct*100:.0f}% → will show {sess_check:.1f}%")
+    print(f"    Weekly:  entered {week_pct*100:.0f}% → will show {week_check:.1f}%")
 
     # Load persistent history
     history = _load_history()

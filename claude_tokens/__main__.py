@@ -25,6 +25,7 @@ PRICE_CACHE_READ  = float(os.environ.get("CLAUDE_PRICE_CACHE_READ",  "0.30"))
 # cache reads for session quota (~10% weight) but not for weekly quota.
 WEIGHT_CACHE_READ_SESSION = float(os.environ.get("CLAUDE_WEIGHT_CACHE_READ_SESSION", "0.1"))
 WEIGHT_CACHE_READ_WEEKLY  = float(os.environ.get("CLAUDE_WEIGHT_CACHE_READ_WEEKLY",  "0.0"))
+WEEK_RESET_UTC_HOUR = 15  # Tuesday 15:00 UTC = noon US Eastern (Anthropic's observed reset time)
 
 R  = "\033[0m"
 B  = "\033[1m"
@@ -87,103 +88,93 @@ def week_start_utc():
     now = datetime.now(timezone.utc)
     days_since_tue = (now.weekday() - 1) % 7
     reset = (now - timedelta(days=days_since_tue)).replace(
-        hour=15, minute=0, second=0, microsecond=0)
+        hour=WEEK_RESET_UTC_HOUR, minute=0, second=0, microsecond=0)
     if reset > now:
         reset -= timedelta(days=7)
     return reset
 
+_file_cache: dict[str, tuple] = {}
+
+def _read_file_records(path: str) -> list:
+    """Return cached (dt, inp, out, cw, cr) tuples; re-reads only if file changed."""
+    try:
+        st = os.stat(path)
+        cached = _file_cache.get(path)
+        if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
+            return cached[2]
+        records = []
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw: continue
+                try: rec = json.loads(raw)
+                except json.JSONDecodeError: continue
+                ts  = rec.get("timestamp")
+                msg = rec.get("message", {})
+                if not isinstance(msg, dict): continue
+                usage = msg.get("usage")
+                if not isinstance(usage, dict) or not ts: continue
+                try:
+                    dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                except (TypeError, ValueError):
+                    try:    dt = datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc)
+                    except: continue
+                inp = usage.get("input_tokens", 0)
+                out = usage.get("output_tokens", 0)
+                cw  = usage.get("cache_creation_input_tokens", 0)
+                cr  = usage.get("cache_read_input_tokens", 0)
+                records.append((dt, inp, out, cw, cr))
+        _file_cache[path] = (st.st_mtime, st.st_size, records)
+        return records
+    except (OSError, PermissionError):
+        return []
+
+
+def _find_session_start(events: list, now: datetime) -> datetime:
+    """Simulate 5h session windows through sorted events to find current session start."""
+    if not events:
+        return now
+    SESSION = timedelta(hours=5)
+    if (now - events[-1][0]) >= SESSION:
+        return now
+    window_start = events[0][0]
+    for evt in events[1:]:
+        if evt[0] > window_start + SESSION:
+            window_start = evt[0]
+    if now - window_start >= SESSION:
+        return now
+    return window_start
+
+
 def collect():
     now         = datetime.now(timezone.utc)
     cutoff_week = week_start_utc()
-    cutoff_scan = now - timedelta(hours=12)   # scan 12h to detect session boundary
-    events: list[tuple[datetime, int, int, int, int]] = []
+    cutoff_scan = now - timedelta(hours=12)
 
+    all_records: list = []
     for path in glob.glob(os.path.join(PROJECTS_DIR, "**", "*.jsonl"), recursive=True):
-        try:
-            with open(path, encoding="utf-8", errors="ignore") as fh:
-                for raw in fh:
-                    raw = raw.strip()
-                    if not raw: continue
-                    try: rec = json.loads(raw)
-                    except json.JSONDecodeError: continue
-                    ts  = rec.get("timestamp")
-                    msg = rec.get("message", {})
-                    if not isinstance(msg, dict): continue
-                    usage = msg.get("usage")
-                    if not isinstance(usage, dict) or not ts: continue
-                    try:
-                        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-                    except (TypeError, ValueError):
-                        try:    dt = datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc)
-                        except: continue
-                    if dt < cutoff_scan: continue
-                    inp = usage.get("input_tokens", 0)
-                    out = usage.get("output_tokens", 0)
-                    cw  = usage.get("cache_creation_input_tokens", 0)
-                    cr  = usage.get("cache_read_input_tokens", 0)
-                    events.append((dt, inp, out, cw, cr))
-        except (OSError, PermissionError): continue
+        all_records.extend(_read_file_records(path))
+    all_records.sort(key=lambda e: e[0])
 
-    events.sort(key=lambda e: e[0])
-
-    # Find session start: largest gap between consecutive events (most likely reset point)
-    # Fall back to rolling 5h if no meaningful gap found
-    sess_start = now - timedelta(hours=5)
-    if len(events) >= 2:
-        max_gap = timedelta(hours=4)   # require 4h+ gap to count as new session (claude.ai window is 5h)
-        max_i   = -1
-        for i in range(1, len(events)):
-            g = events[i][0] - events[i - 1][0]
-            if g > max_gap:
-                max_gap = g
-                max_i   = i
-        if max_i != -1:
-            sess_start = events[max_i][0]
-
-    # If last activity was >5h ago the session window has fully elapsed — reset to empty
-    if events and (now - events[-1][0]) > timedelta(hours=5):
-        sess_start = now
+    recent = [r for r in all_records if r[0] >= cutoff_scan]
+    sess_start = _find_session_start(recent, now)
 
     sess = defaultdict(int)
     week = defaultdict(int)
     sess_oldest: datetime | None = None
 
-    for path in glob.glob(os.path.join(PROJECTS_DIR, "**", "*.jsonl"), recursive=True):
-        try:
-            with open(path, encoding="utf-8", errors="ignore") as fh:
-                for raw in fh:
-                    raw = raw.strip()
-                    if not raw: continue
-                    try: rec = json.loads(raw)
-                    except json.JSONDecodeError: continue
-                    ts  = rec.get("timestamp")
-                    msg = rec.get("message", {})
-                    if not isinstance(msg, dict): continue
-                    usage = msg.get("usage")
-                    if not isinstance(usage, dict) or not ts: continue
-                    try:
-                        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-                    except (TypeError, ValueError):
-                        try:    dt = datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc)
-                        except: continue
-
-                    inp = usage.get("input_tokens", 0)
-                    out = usage.get("output_tokens", 0)
-                    cw  = usage.get("cache_creation_input_tokens", 0)
-                    cr  = usage.get("cache_read_input_tokens", 0)
-
-                    if dt >= sess_start:
-                        sess["input"]  += inp; sess["output"] += out
-                        sess["cw"]     += cw;  sess["cr"]     += cr
-                        sess["msgs"]   += 1
-                        if sess_oldest is None or dt < sess_oldest:
-                            sess_oldest = dt
-
-                    if dt >= cutoff_week:
-                        week["input"]  += inp; week["output"] += out
-                        week["cw"]     += cw;  week["cr"]     += cr
-                        week["msgs"]   += 1
-        except (OSError, PermissionError): continue
+    for dt, inp, out, cw, cr in all_records:
+        if dt < cutoff_week:
+            continue
+        week["input"]  += inp; week["output"] += out
+        week["cw"]     += cw;  week["cr"]     += cr
+        week["msgs"]   += 1
+        if dt >= sess_start:
+            sess["input"]  += inp; sess["output"] += out
+            sess["cw"]     += cw;  sess["cr"]     += cr
+            sess["msgs"]   += 1
+            if sess_oldest is None or dt < sess_oldest:
+                sess_oldest = dt
 
     sess_reset = (sess_start + timedelta(hours=5)).astimezone()
     return sess, week, sess_oldest, sess_reset
@@ -210,7 +201,7 @@ def render(sess, week, sess_oldest, sess_reset):
 
     def section(label, sublabel, data, limit, col, cr_weight=0.0):
         inp, out, cw, cr = data["input"], data["output"], data["cw"], data["cr"]
-        total = inp + out + cw + int(cr * cr_weight)
+        total = inp + out + cw + round(cr * cr_weight)
         usd   = calc_cost(inp, out, cw, cr)
         msgs  = data["msgs"]
 

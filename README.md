@@ -67,13 +67,26 @@ Press `c` in the TUI (or run `claude-tokens-calibrate` standalone) while claude.
   Session usage % shown on claude.ai: 36
   Weekly  usage % shown on claude.ai: 26
 
+  Round-trip check (TUI will display these):
+    Session: entered 36% → will show 36.0%
+    Weekly:  entered 26% → will show 26.0%
+
   CLAUDE_SESSION_LIMIT = 7,550,583  (7.55M)
   CLAUDE_WEEKLY_LIMIT  = 26,076,923  (26.08M)
 ```
 
-Limits apply immediately in the running TUI. The command to export them permanently is printed at the end.
+Limits apply immediately in the running TUI. The wizard then prompts to save to `~/.claude/claude-tokens.conf`.
 
 ### Colors
+
+Press `t` in the TUI (or run `claude-tokens-colors` standalone) to open the interactive color picker:
+
+1. Choose whether warning colors are enabled — when on, the bar and "remaining" indicator shift to yellow at 75% usage and red at 90%.
+2. For each color role, a numbered swatch list is shown (16 options). Pick by name (`cyan`) or number (`1`–`16`).
+3. A live preview of the full widget updates after each pick.
+4. Non-default choices are offered for save to `~/.claude/claude-tokens.conf`.
+
+Color roles can also be set directly as env vars:
 
 ```bash
 export CLAUDE_COLOR_SESSION=cyan      # session section (default: cyan)
@@ -120,6 +133,6 @@ Keys: `q` quit · `r` force refresh · `c` calibrate limits · `t` pick colors i
 
 Reads `~/.claude/projects/**/*.jsonl` — the JSONL logs Claude Code writes per conversation. Aggregates `usage` fields from API response records.
 
-**Session window:** detected from the largest gap (>30 min) between consecutive API calls in the last 12 hours, falling back to a rolling 5-hour window if no gap is found.
+**Session window:** detected by simulating 5-hour windows through the last 12 hours of activity. A new session opens whenever an event arrives after the previous 5-hour window has closed — matching claude.ai's fixed session model.
 
 **Weekly window:** resets Tuesday 15:00 UTC (matching claude.ai's reset schedule).
