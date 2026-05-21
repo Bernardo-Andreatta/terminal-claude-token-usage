@@ -107,7 +107,7 @@ def run():
     print("Open claude.ai → Settings → Usage and read the percentages.\n")
 
     print("Collecting current token counts...")
-    sess, week, _, _ = collect()
+    sess, week, _ = collect()
 
     sess_x = sess["input"] + sess["output"] + sess["cw"]
     sess_y = sess["cr"]

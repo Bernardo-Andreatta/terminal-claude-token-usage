@@ -164,9 +164,7 @@ def run():
 
 def main():
     """Standalone entry point."""
-    result = run()
-    if result:
-        pass
+    run()
 
 
 if __name__ == "__main__":

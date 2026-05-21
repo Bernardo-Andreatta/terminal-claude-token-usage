@@ -161,7 +161,6 @@ def collect():
 
     sess = defaultdict(int)
     week = defaultdict(int)
-    sess_oldest: datetime | None = None
 
     for dt, inp, out, cw, cr in all_records:
         if dt < cutoff_week:
@@ -173,11 +172,9 @@ def collect():
             sess["input"]  += inp; sess["output"] += out
             sess["cw"]     += cw;  sess["cr"]     += cr
             sess["msgs"]   += 1
-            if sess_oldest is None or dt < sess_oldest:
-                sess_oldest = dt
 
     sess_reset = (sess_start + timedelta(hours=5)).astimezone()
-    return sess, week, sess_oldest, sess_reset
+    return sess, week, sess_reset
 
 W = 40
 
@@ -185,7 +182,7 @@ def line(s=""):
     pad = " " * max(0, W - vlen(s))
     print(f"│ {s}{pad} │", flush=True)
 
-def render(sess, week, sess_oldest, sess_reset):
+def render(sess, week, sess_reset):
     wend       = (week_start_utc() + timedelta(days=7)).astimezone()
     now_local  = datetime.now()
     BAR_W      = W - 2
@@ -322,10 +319,10 @@ def main():
                     force = True
 
             if force:
-                sess, week, sess_oldest, sess_reset = collect()
+                sess, week, sess_reset = collect()
                 sys.stdout.write(CLEAR_HOME)
                 sys.stdout.flush()
-                render(sess, week, sess_oldest, sess_reset)
+                render(sess, week, sess_reset)
                 last_refresh = time.monotonic()
 
             time.sleep(0.1)
