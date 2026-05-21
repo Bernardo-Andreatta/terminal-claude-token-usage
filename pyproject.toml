@@ -12,6 +12,7 @@ readme = "README.md"
 [project.scripts]
 claude-tokens = "claude_tokens.__main__:main"
 claude-tokens-calibrate = "claude_tokens.calibrate:main"
+claude-tokens-colors    = "claude_tokens.colors:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

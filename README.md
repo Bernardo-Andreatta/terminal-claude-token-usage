@@ -20,7 +20,7 @@ Live terminal widget showing Claude Code token consumption for the current sessi
 │   187 msgs  ≈ $5.67                      │
 │                                          │
 ╰──────────────────────────────────────────╯
-  refresh 15s · q quit · r refresh · c calibrate
+  refresh 15s · q quit · r refresh · c calibrate · t colors
 ```
 
 ## Install
@@ -40,7 +40,18 @@ pipx install .
 
 ## Configuration
 
-Set limits to match your Claude plan (env vars in `~/.zshrc`):
+Settings are saved to `~/.claude/claude-tokens.conf` — the calibration wizard and color picker both offer to save there automatically. No shell editing required.
+
+You can also set any value as an env var (env vars override the config file):
+
+```bash
+# ~/.claude/claude-tokens.conf  (or export in ~/.zshrc)
+CLAUDE_SESSION_LIMIT=7631489
+CLAUDE_WEEKLY_LIMIT=26230769
+CLAUDE_REFRESH=15
+```
+
+### Manual config (env vars in `~/.zshrc`, override config file):
 
 ```bash
 export CLAUDE_SESSION_LIMIT=7631489   # session window limit
@@ -62,6 +73,29 @@ Press `c` in the TUI (or run `claude-tokens-calibrate` standalone) while claude.
 
 Limits apply immediately in the running TUI. The command to export them permanently is printed at the end.
 
+### Colors
+
+```bash
+export CLAUDE_COLOR_SESSION=cyan      # session section (default: cyan)
+export CLAUDE_COLOR_WEEK=magenta      # week section (default: magenta)
+export CLAUDE_COLOR_OK=green          # remaining indicator, low usage (default: green)
+export CLAUDE_COLOR_WARN=yellow       # bar/remaining at 75%+ usage (default: yellow)
+export CLAUDE_COLOR_CRIT=red          # bar/remaining at 90%+ usage (default: red)
+```
+
+Accepts color names (`cyan`, `magenta`, `green`, `yellow`, `red`, `blue`, `white`, `bright_cyan`, etc.) or raw ANSI codes (`36`, `35`, `92`, …).
+
+### Cache read weight
+
+Session and weekly quotas appear to use different cache-read accounting. Session counts cache reads at ~10% weight; weekly ignores them entirely:
+
+```bash
+export CLAUDE_WEIGHT_CACHE_READ_SESSION=0.1   # default
+export CLAUDE_WEIGHT_CACHE_READ_WEEKLY=0.0    # default
+```
+
+If your percentage drifts, recalibrate first. If drift persists, the calibration wizard will suggest an adjusted weight after two calibrations.
+
 ### Pricing (per 1M tokens, defaults match claude-sonnet-4-6)
 
 ```bash
@@ -76,10 +110,11 @@ export CLAUDE_PRICE_CACHE_READ=0.30
 ```bash
 claude-tokens            # interactive TUI
 claude-tokens-calibrate  # standalone calibration wizard
+claude-tokens-colors     # standalone color picker
 python -m claude_tokens  # same as claude-tokens, via module
 ```
 
-Keys: `q` quit · `r` force refresh · `c` calibrate limits interactively
+Keys: `q` quit · `r` force refresh · `c` calibrate limits · `t` pick colors interactively
 
 ## How it works
 

@@ -4,6 +4,9 @@
 import json, os, re, glob, sys, time, signal
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
+from claude_tokens.config import load as _load_config
+
+_load_config()  # populate os.environ from config file before reading constants
 
 PROJECTS_DIR  = os.path.expanduser("~/.claude/projects")
 REFRESH_SECS  = int(os.environ.get("CLAUDE_REFRESH", "15"))
@@ -18,14 +21,41 @@ PRICE_OUTPUT      = float(os.environ.get("CLAUDE_PRICE_OUTPUT",      "15.00"))
 PRICE_CACHE_WRITE = float(os.environ.get("CLAUDE_PRICE_CACHE_WRITE", "3.75"))
 PRICE_CACHE_READ  = float(os.environ.get("CLAUDE_PRICE_CACHE_READ",  "0.30"))
 
+# Session and weekly use different cache-read weights — claude.ai appears to count
+# cache reads for session quota (~10% weight) but not for weekly quota.
+WEIGHT_CACHE_READ_SESSION = float(os.environ.get("CLAUDE_WEIGHT_CACHE_READ_SESSION", "0.1"))
+WEIGHT_CACHE_READ_WEEKLY  = float(os.environ.get("CLAUDE_WEIGHT_CACHE_READ_WEEKLY",  "0.0"))
+
 R  = "\033[0m"
 B  = "\033[1m"
 D  = "\033[2m"
-CY = "\033[36m"
-MA = "\033[35m"
-YE = "\033[33m"
-RE = "\033[31m"
-GR = "\033[32m"
+
+_NAMED = {
+    "black": 30, "red": 31, "green": 32, "yellow": 33,
+    "blue": 34, "magenta": 35, "cyan": 36, "white": 37,
+    "bright_black": 90, "bright_red": 91, "bright_green": 92,
+    "bright_yellow": 93, "bright_blue": 94, "bright_magenta": 95,
+    "bright_cyan": 96, "bright_white": 97,
+}
+
+def _col(env_var, default_code):
+    v = os.environ.get(env_var, "").strip().lower()
+    if not v:
+        return f"\033[{default_code}m"
+    if v in _NAMED:
+        return f"\033[{_NAMED[v]}m"
+    try:
+        return f"\033[{int(v)}m"
+    except ValueError:
+        return f"\033[{default_code}m"
+
+CY = _col("CLAUDE_COLOR_SESSION", 36)
+MA = _col("CLAUDE_COLOR_WEEK",    35)
+GR = _col("CLAUDE_COLOR_OK",      32)
+YE = _col("CLAUDE_COLOR_WARN",    33)
+RE = _col("CLAUDE_COLOR_CRIT",    31)
+
+WARN_COLORS = os.environ.get("CLAUDE_WARN_COLORS", "1").strip() not in ("0", "false", "no", "off")
 
 CLEAR_HOME = "\033[H\033[J"
 HIDE_CUR   = "\033[?25l"
@@ -49,7 +79,8 @@ def pbar(used, limit, width, col):
         return c("█" * width, D)
     ratio  = min(used / limit, 1.0)
     filled = int(ratio * width)
-    col    = col if ratio < 0.75 else (YE if ratio < 0.90 else RE)
+    if WARN_COLORS:
+        col = col if ratio < 0.75 else (YE if ratio < 0.90 else RE)
     return c("█" * filled, col) + c("░" * (width - filled), D)
 
 def week_start_utc():
@@ -99,7 +130,7 @@ def collect():
     # Fall back to rolling 5h if no meaningful gap found
     sess_start = now - timedelta(hours=5)
     if len(events) >= 2:
-        max_gap = timedelta(minutes=30)   # ignore gaps < 30min
+        max_gap = timedelta(hours=4)   # require 4h+ gap to count as new session (claude.ai window is 5h)
         max_i   = -1
         for i in range(1, len(events)):
             g = events[i][0] - events[i - 1][0]
@@ -108,6 +139,10 @@ def collect():
                 max_i   = i
         if max_i != -1:
             sess_start = events[max_i][0]
+
+    # If last activity was >5h ago the session window has fully elapsed — reset to empty
+    if events and (now - events[-1][0]) > timedelta(hours=5):
+        sess_start = now
 
     sess = defaultdict(int)
     week = defaultdict(int)
@@ -159,16 +194,19 @@ def line(s=""):
     pad = " " * max(0, W - vlen(s))
     print(f"│ {s}{pad} │", flush=True)
 
-def render(sess, week, sess_oldest, sess_reset, calib_msg=None):
+def render(sess, week, sess_oldest, sess_reset):
     wend       = (week_start_utc() + timedelta(days=7)).astimezone()
     now_local  = datetime.now()
     BAR_W      = W - 2
 
     sess_remaining = sess_reset - datetime.now().astimezone()
     sess_rem_secs  = max(0, int(sess_remaining.total_seconds()))
-    sess_rem_h     = sess_rem_secs // 3600
-    sess_rem_m     = (sess_rem_secs % 3600) // 60
-    sess_sublabel  = f"resets in {sess_rem_h}h {sess_rem_m:02d}m"
+    if sess["msgs"] == 0:
+        sess_sublabel = "no active session"
+    else:
+        sess_rem_h    = sess_rem_secs // 3600
+        sess_rem_m    = (sess_rem_secs % 3600) // 60
+        sess_sublabel = f"resets in {sess_rem_h}h {sess_rem_m:02d}m"
 
     def section(label, sublabel, data, limit, col, cr_weight=0.0):
         inp, out, cw, cr = data["input"], data["output"], data["cw"], data["cr"]
@@ -182,7 +220,10 @@ def render(sess, week, sess_oldest, sess_reset, calib_msg=None):
         if limit > 0:
             rem     = max(limit - total, 0)
             pct     = min(total / limit * 100, 100)
-            rem_col = GR if rem > limit * 0.25 else (YE if rem > limit * 0.10 else RE)
+            if WARN_COLORS:
+                rem_col = GR if rem > limit * 0.25 else (YE if rem > limit * 0.10 else RE)
+            else:
+                rem_col = col
             line(f"  {used_s} / {fmt(limit)}  ({pct:.0f}%)")
             line(f"  {c(fmt(rem) + ' remaining', rem_col)}")
         else:
@@ -194,19 +235,16 @@ def render(sess, week, sess_oldest, sess_reset, calib_msg=None):
     print(f"╭{'─' * (W + 2)}╮", flush=True)
     line(c(f"  {now_local.strftime('%a %Y-%m-%d  %H:%M:%S')} Claude Tokens", D))
     line()
-    section("Session", sess_sublabel, sess, limits["session"], CY, cr_weight=0.1)
+    section("Session", sess_sublabel, sess, limits["session"], CY, cr_weight=WEIGHT_CACHE_READ_SESSION)
     line()
-    section("Week", f"resets {wend.strftime('%a %m/%d %H:%M')}", week, limits["weekly"], MA, cr_weight=0.0)
+    section("Week", f"resets {wend.strftime('%a %m/%d %H:%M')}", week, limits["weekly"], MA, cr_weight=WEIGHT_CACHE_READ_WEEKLY)
     line()
     print(f"╰{'─' * (W + 2)}╯", flush=True)
 
-    hint = c(f"  refresh {REFRESH_SECS}s · q quit · r refresh · c calibrate", D)
+    hint = c(f"  refresh {REFRESH_SECS}s · q quit · r refresh · c calibrate · t colors", D)
     if limits["session"] == 0 or limits["weekly"] == 0:
         hint += c("  |  set CLAUDE_SESSION_LIMIT / CLAUDE_WEEKLY_LIMIT", D)
     print(hint, flush=True)
-
-    if calib_msg:
-        print(c(f"  {calib_msg}", YE), flush=True)
 
 def setup_terminal():
     """Non-blocking single-keypress input."""
@@ -245,7 +283,6 @@ def main():
 
     try:
         last_refresh = 0.0
-        calib_msg    = None
         while True:
             now = time.monotonic()
             force = (now - last_refresh) >= REFRESH_SECS
@@ -264,11 +301,27 @@ def main():
                     result = calibrate_run()
                     if result:
                         limits["session"], limits["weekly"] = result
-                        calib_msg = (
-                            f"Limits updated. To save permanently: "
-                            f"export CLAUDE_SESSION_LIMIT={limits['session']} "
-                            f"CLAUDE_WEEKLY_LIMIT={limits['weekly']}"
-                        )
+                    try:
+                        fd, old_tty = setup_terminal()
+                    except Exception:
+                        pass
+                    sys.stdout.write(HIDE_CUR)
+                    sys.stdout.flush()
+                    force = True
+                if ch in (b't', b'T'):
+                    restore_terminal(fd, old_tty)
+                    sys.stdout.write(SHOW_CUR)
+                    sys.stdout.flush()
+                    from claude_tokens.colors import run as colors_run, _ansi
+                    result = colors_run()
+                    if result:
+                        global CY, MA, GR, YE, RE, WARN_COLORS
+                        CY = _ansi(result.get("CLAUDE_COLOR_SESSION", "cyan"))
+                        MA = _ansi(result.get("CLAUDE_COLOR_WEEK",    "magenta"))
+                        GR = _ansi(result.get("CLAUDE_COLOR_OK",      "green"))
+                        YE = _ansi(result.get("CLAUDE_COLOR_WARN",    "yellow"))
+                        RE = _ansi(result.get("CLAUDE_COLOR_CRIT",    "red"))
+                        WARN_COLORS = result.get("CLAUDE_WARN_COLORS", "1") not in ("0",)
                     try:
                         fd, old_tty = setup_terminal()
                     except Exception:
@@ -281,7 +334,7 @@ def main():
                 sess, week, sess_oldest, sess_reset = collect()
                 sys.stdout.write(CLEAR_HOME)
                 sys.stdout.flush()
-                render(sess, week, sess_oldest, sess_reset, calib_msg)
+                render(sess, week, sess_oldest, sess_reset)
                 last_refresh = time.monotonic()
 
             time.sleep(0.1)
