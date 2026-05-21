@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-tokens"
+version = "0.1.0"
+description = "Live terminal widget tracking Claude Code token usage"
+requires-python = ">=3.9"
+readme = "README.md"
+
+[project.scripts]
+claude-tokens = "claude_tokens.__main__:main"
+claude-tokens-calibrate = "claude_tokens.calibrate:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["claude_tokens*"]
