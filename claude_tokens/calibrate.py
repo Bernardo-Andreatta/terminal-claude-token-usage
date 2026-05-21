@@ -184,6 +184,7 @@ def run():
             saves["CLAUDE_WEIGHT_CACHE_READ_SESSION"] = f"{w_learned:.4f}"
             saves["CLAUDE_SESSION_LIMIT"] = str(sess_limit_w)
             sess_limit = sess_limit_w
+            os.environ["CLAUDE_WEIGHT_CACHE_READ_SESSION"] = f"{w_learned:.4f}"
         else:
             print(f"    Weight well-calibrated.")
 

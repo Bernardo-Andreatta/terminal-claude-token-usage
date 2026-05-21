@@ -288,7 +288,9 @@ def main():
                     from claude_tokens.calibrate import run as calibrate_run
                     result = calibrate_run()
                     if result:
+                        global WEIGHT_CACHE_READ_SESSION
                         limits["session"], limits["weekly"] = result
+                        WEIGHT_CACHE_READ_SESSION = float(os.environ.get("CLAUDE_WEIGHT_CACHE_READ_SESSION", "0.1"))
                     try:
                         fd, old_tty = setup_terminal()
                     except Exception:
