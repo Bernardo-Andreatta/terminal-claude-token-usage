@@ -26,6 +26,9 @@ PRICE_CACHE_READ  = float(os.environ.get("CLAUDE_PRICE_CACHE_READ",  "0.30"))
 WEIGHT_CACHE_READ_SESSION = float(os.environ.get("CLAUDE_WEIGHT_CACHE_READ_SESSION", "0.1"))
 WEIGHT_CACHE_READ_WEEKLY  = float(os.environ.get("CLAUDE_WEIGHT_CACHE_READ_WEEKLY",  "0.0"))
 WEEK_RESET_UTC_HOUR = 15  # Tuesday 15:00 UTC = noon US Eastern (Anthropic's observed reset time)
+# Offset applied to computed session start (positive = session started earlier than JSONL shows).
+# Useful when sessions are started via claude.ai web before switching to CLI.
+SESSION_OFFSET_SECS = int(os.environ.get("CLAUDE_SESSION_OFFSET_SECS", "0"))
 
 R  = "\033[0m"
 B  = "\033[1m"
@@ -103,6 +106,7 @@ def _read_file_records(path: str) -> list:
         if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
             return cached[2]
         records = []
+        seen_msg_ids: set = set()
         with open(path, encoding="utf-8", errors="ignore") as fh:
             for raw in fh:
                 raw = raw.strip()
@@ -114,6 +118,12 @@ def _read_file_records(path: str) -> list:
                 if not isinstance(msg, dict): continue
                 usage = msg.get("usage")
                 if not isinstance(usage, dict) or not ts: continue
+                # Deduplicate: Claude Code writes the same API response 2-3x per message
+                msg_id = msg.get("id")
+                if msg_id:
+                    if msg_id in seen_msg_ids:
+                        continue
+                    seen_msg_ids.add(msg_id)
                 try:
                     dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
                 except (TypeError, ValueError):
@@ -158,6 +168,8 @@ def collect():
 
     recent = [r for r in all_records if r[0] >= cutoff_scan]
     sess_start = _find_session_start(recent, now)
+    if SESSION_OFFSET_SECS and sess_start < now:
+        sess_start -= timedelta(seconds=SESSION_OFFSET_SECS)
 
     sess = defaultdict(int)
     week = defaultdict(int)
@@ -177,10 +189,11 @@ def collect():
     return sess, week, sess_reset
 
 W = 40
+MARGIN = " " * int(os.environ.get("CLAUDE_MARGIN", "2"))
 
 def line(s=""):
     pad = " " * max(0, W - vlen(s))
-    print(f"│ {s}{pad} │", flush=True)
+    print(f"{MARGIN}│ {s}{pad} │", flush=True)
 
 def render(sess, week, sess_reset):
     wend       = (week_start_utc() + timedelta(days=7)).astimezone()
@@ -219,20 +232,20 @@ def render(sess, week, sess_reset):
         line(f"  {c(str(msgs) + ' msgs', D)}  {c('≈ $' + f'{usd:.2f}', YE)}")
 
     print("\n\n", end="", flush=True)
-    print(c("  ~ estimates only · Anthropic usage API is private", D), flush=True)
-    print(f"╭{'─' * (W + 2)}╮", flush=True)
+    print(f"{MARGIN}{c('  ~ estimates only · Anthropic usage API is private', D)}", flush=True)
+    print(f"{MARGIN}╭{'─' * (W + 2)}╮", flush=True)
     line(c(f"  {now_local.strftime('%a %Y-%m-%d  %H:%M:%S')} Claude Tokens", D))
     line()
     section("Session", sess_sublabel, sess, limits["session"], CY, cr_weight=WEIGHT_CACHE_READ_SESSION)
     line()
     section("Week", f"resets {wend.strftime('%a %m/%d %H:%M')}", week, limits["weekly"], MA, cr_weight=WEIGHT_CACHE_READ_WEEKLY)
     line()
-    print(f"╰{'─' * (W + 2)}╯", flush=True)
+    print(f"{MARGIN}╰{'─' * (W + 2)}╯", flush=True)
 
     hint = c(f"  refresh {REFRESH_SECS}s · q quit · r refresh · c calibrate · t colors", D)
     if limits["session"] == 0 or limits["weekly"] == 0:
         hint += c("  |  set CLAUDE_SESSION_LIMIT / CLAUDE_WEEKLY_LIMIT", D)
-    print(hint, flush=True)
+    print(f"{MARGIN}{hint}", flush=True)
 
 def setup_terminal():
     """Non-blocking single-keypress input."""

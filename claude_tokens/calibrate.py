@@ -133,39 +133,46 @@ def run():
         input("\nPress Enter to return...")
         return None
 
-    # Single-point estimates
-    sess_limit = round(sess_w / sess_pct)
     week_limit = round(week_w / week_pct)
 
-    sess_check = sess_w / sess_limit * 100
+    # Load persistent history
+    history = _load_history()
+
+    # Learn from history + this point to determine final weight before computing limit
+    entry_draft = {
+        "ts":         datetime.now().isoformat(),
+        "sess_x":     sess_x, "sess_y":   sess_y, "sess_pct": sess_pct,
+        "week_x":     week_x, "week_y":   week_y, "week_pct": week_pct,
+    }
+    all_history = history + [{**entry_draft, "sess_limit": 0, "week_limit": 0}]
+    w_learned, n_pairs = _learn_weight(all_history)
+    n_pts = len(all_history)
+
+    # Determine the weight that will be in effect after saving
+    final_w = WEIGHT_CACHE_READ_SESSION
+    weight_changed = False
+    if w_learned is not None and n_pairs >= 1 and abs(w_learned - WEIGHT_CACHE_READ_SESSION) >= 0.005:
+        weight_changed = True
+        final_w = w_learned
+
+    # Limit is always anchored to the user's entered % using the final weight.
+    # This guarantees the TUI shows exactly what the user typed.
+    sess_limit = round((sess_x + round(sess_y * final_w)) / sess_pct)
+
+    sess_check = (sess_x + round(sess_y * final_w)) / sess_limit * 100
     week_check = week_w / week_limit * 100
     print(f"\n  Round-trip check (TUI will display these):")
     print(f"    Session: entered {sess_pct*100:.0f}% → will show {sess_check:.1f}%")
     print(f"    Weekly:  entered {week_pct*100:.0f}% → will show {week_check:.1f}%")
 
-    # Load persistent history
-    history = _load_history()
-
     # Drift vs most recent calibration
     if history:
         _show_drift(history[-1], sess_limit, week_limit)
 
-    # Build new entry and merge into history
-    entry = {
-        "ts":         datetime.now().isoformat(),
-        "sess_x":     sess_x, "sess_y":   sess_y, "sess_pct": sess_pct,
-        "sess_limit": sess_limit,
-        "week_x":     week_x, "week_y":   week_y, "week_pct": week_pct,
-        "week_limit": week_limit,
-    }
-    all_history = history + [entry]
+    # Build final history entry
+    entry = {**entry_draft, "sess_limit": sess_limit, "week_limit": week_limit}
+    all_history[-1] = entry
 
-    # Learn from all historical pairs
-    w_learned, n_pairs = _learn_weight(all_history)
-    n_pts = len(all_history)
-
-    # Single-point limits are ALWAYS what gets returned and saved —
-    # they're computed with the same weight the TUI uses, so they're always consistent.
     saves = {
         "CLAUDE_SESSION_LIMIT": str(sess_limit),
         "CLAUDE_WEEKLY_LIMIT":  str(week_limit),
@@ -174,17 +181,10 @@ def run():
     if w_learned is not None and n_pairs >= 1:
         print(f"\n  Historical weight estimate — {n_pts} calibrations, {n_pairs} pairs:")
         print(f"    Learned CLAUDE_WEIGHT_CACHE_READ_SESSION = {w_learned:.4f}")
-        current_w = WEIGHT_CACHE_READ_SESSION
-        if abs(w_learned - current_w) >= 0.005:
-            # Recompute sess_limit using w_learned so it stays consistent with
-            # the new weight on restart — old limit + new weight = wrong percentage.
-            sess_limit_w = round((sess_x + w_learned * sess_y) / sess_pct)
-            print(f"    (current: {current_w})")
-            print(f"    Saving weight + consistent limit: {fmt(sess_limit_w)}")
+        if weight_changed:
             saves["CLAUDE_WEIGHT_CACHE_READ_SESSION"] = f"{w_learned:.4f}"
-            saves["CLAUDE_SESSION_LIMIT"] = str(sess_limit_w)
-            sess_limit = sess_limit_w
             os.environ["CLAUDE_WEIGHT_CACHE_READ_SESSION"] = f"{w_learned:.4f}"
+            print(f"    (was: {WEIGHT_CACHE_READ_SESSION:.4f}, limit adjusted to keep {sess_pct*100:.0f}%)")
         else:
             print(f"    Weight well-calibrated.")
 
