@@ -12,11 +12,10 @@ class ClaudeTokens < Formula
 
   def install
     virtualenv_install_with_resources
+    bin.install_symlink Dir[libexec/"bin/claude-tokens*"]
   end
 
   test do
-    system bin/"claude-tokens", "--help"
-  rescue SystemExit
-    true
+    assert_predicate bin/"claude-tokens", :exist?
   end
 end
