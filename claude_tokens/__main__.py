@@ -247,30 +247,66 @@ def render(sess, week, sess_reset):
         hint += c("  |  set CLAUDE_SESSION_LIMIT / CLAUDE_WEEKLY_LIMIT", D)
     print(f"{MARGIN}{hint}", flush=True)
 
-def setup_terminal():
-    """Non-blocking single-keypress input."""
-    import tty, termios
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    tty.setcbreak(fd)
-    return fd, old
+if sys.platform == "win32":
+    import msvcrt as _msvcrt
 
-def restore_terminal(fd, old):
-    import termios
-    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    def setup_terminal():
+        return None, None
 
-def key_available(fd):
-    import select
-    r, _, _ = select.select([fd], [], [], 0)
-    return bool(r)
+    def restore_terminal(fd, old):
+        pass
+
+    def key_available(fd):
+        return _msvcrt.kbhit()
+
+    def _read_key(fd):
+        return _msvcrt.getch()
+
+    def _enable_vt():
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            handle = k32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            mode = ctypes.c_ulong()
+            if k32.GetConsoleMode(handle, ctypes.byref(mode)):
+                k32.SetConsoleMode(handle, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        except Exception:
+            pass
+
+else:
+    import tty as _tty, termios as _termios, select as _select
+
+    def setup_terminal():
+        fd = sys.stdin.fileno()
+        old = _termios.tcgetattr(fd)
+        _tty.setcbreak(fd)
+        return fd, old
+
+    def restore_terminal(fd, old):
+        _termios.tcsetattr(fd, _termios.TCSADRAIN, old)
+
+    def key_available(fd):
+        r, _, _ = _select.select([fd], [], [], 0)
+        return bool(r)
+
+    def _read_key(fd):
+        return os.read(fd, 1)
+
+    def _enable_vt():
+        pass
 
 def main():
+    _enable_vt()
+
     def bye(*_):
         sys.stdout.write(SHOW_CUR)
         sys.stdout.flush()
         sys.exit(0)
-    signal.signal(signal.SIGINT,  bye)
-    signal.signal(signal.SIGTERM, bye)
+    signal.signal(signal.SIGINT, bye)
+    try:
+        signal.signal(signal.SIGTERM, bye)
+    except (OSError, ValueError):
+        pass  # SIGTERM not available on all Windows configurations
 
     try:
         fd, old_tty = setup_terminal()
@@ -289,7 +325,7 @@ def main():
             force = (now - last_refresh) >= REFRESH_SECS
 
             if interactive and key_available(fd):
-                ch = os.read(fd, 1)
+                ch = _read_key(fd)
                 if ch in (b'q', b'Q'):
                     break
                 if ch in (b'r', b'R'):

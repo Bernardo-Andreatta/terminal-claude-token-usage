@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "description": "Live terminal TUI tracking Claude Code token usage and cost estimates",
+  "homepage": "https://github.com/Bernardo-Andreatta/terminal-claude-token-usage",
+  "license": "MIT",
+  "depends": "main/python",
+  "installer": {
+    "script": [
+      "python -m pip install claude-tokens==$version --target \"$dir\\Lib\" --quiet",
+      "Set-Content \"$dir\\claude-tokens.cmd\" \"@python -m claude_tokens %*\""
+    ]
+  },
+  "bin": "claude-tokens.cmd",
+  "checkver": {
+    "github": "https://github.com/Bernardo-Andreatta/terminal-claude-token-usage"
+  }
+}
