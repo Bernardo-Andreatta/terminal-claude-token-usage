@@ -53,6 +53,20 @@ def save(updates: dict, path=CONFIG_PATH):
         f.writelines(new_lines)
 
 
+def is_first_run(path=CONFIG_PATH) -> bool:
+    if not os.path.exists(path):
+        return True
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if line.strip().startswith("CLAUDE_ONBOARDED="):
+                return False
+    return True
+
+
+def mark_onboarded(path=CONFIG_PATH):
+    save({"CLAUDE_ONBOARDED": "1"}, path)
+
+
 def offer_save(updates: dict, path=CONFIG_PATH):
     """Ask user to save updates to config file. Returns True if saved."""
     try:

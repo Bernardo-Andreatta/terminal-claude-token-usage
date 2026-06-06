@@ -4,7 +4,7 @@
 import json, os, re, glob, sys, time, signal
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
-from claude_tokens.config import load as _load_config
+from claude_tokens.config import load as _load_config, is_first_run, mark_onboarded
 
 _load_config()  # populate os.environ from config file before reading constants
 
@@ -295,6 +295,64 @@ else:
     def _enable_vt():
         pass
 
+def show_onboarding():
+    OW = 54  # inner width
+    M  = MARGIN
+
+    def row(s=""):
+        pad = " " * max(0, OW - vlen(s))
+        print(f"{M}│ {s}{pad} │", flush=True)
+
+    def rule():
+        row(c("─" * OW, D))
+
+    sys.stdout.write(CLEAR_HOME)
+    sys.stdout.flush()
+
+    print(f"{M}╭{'─' * (OW + 2)}╮", flush=True)
+    row()
+    row(c("  claude-tokens", B) + c("  v1.0.0", D))
+    row()
+    rule()
+    row()
+    row(c("  ⚠  Estimates only", B + YE))
+    row(c("     Anthropic doesn't expose real quota data.", D))
+    row(c("     Numbers come from your local JSONL logs", D))
+    row(c("     and may drift from claude.ai by ±5–15%.", D))
+    row()
+    rule()
+    row()
+    row(c("  Calibrate for better accuracy", B))
+    row()
+    row(f"  Press {c(' c ', B)} in the TUI, then enter the")
+    row(f"  percentages shown on claude.ai:")
+    row()
+    row(c("     Settings → Usage  (session % and week %)", D))
+    row()
+    row("  The tool computes your limits automatically.")
+    row(c("  Recalibrate anytime — accuracy improves", D))
+    row(c("  after each calibration.", D))
+    row()
+    rule()
+    row()
+    row(c("  Press any key to start", D))
+    row()
+    print(f"{M}╰{'─' * (OW + 2)}╯", flush=True)
+
+    # wait for keypress
+    try:
+        fd, old = setup_terminal()
+        if fd is not None:
+            _read_key(fd)
+            restore_terminal(fd, old)
+        else:
+            input()
+    except Exception:
+        pass
+
+    mark_onboarded()
+
+
 def main():
     _enable_vt()
 
@@ -308,15 +366,17 @@ def main():
     except (OSError, ValueError):
         pass  # SIGTERM not available on all Windows configurations
 
+    sys.stdout.write(HIDE_CUR)
+    sys.stdout.flush()
+    if is_first_run():
+        show_onboarding()
+
     try:
         fd, old_tty = setup_terminal()
         interactive = True
     except Exception:
         interactive = False
         fd = old_tty = None
-
-    sys.stdout.write(HIDE_CUR)
-    sys.stdout.flush()
 
     try:
         last_refresh = 0.0
