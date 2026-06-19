@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-tokens"
-version = "1.0.0"
+version = "1.0.1"
 description = "Live terminal TUI tracking Claude Code token usage and cost estimates"
 readme = "README.md"
 license = { text = "MIT" }
