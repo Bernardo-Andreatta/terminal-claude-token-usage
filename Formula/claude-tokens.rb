@@ -4,7 +4,7 @@ class ClaudeTokens < Formula
   desc "Live terminal TUI tracking Claude Code token usage and cost estimates"
   homepage "https://github.com/Bernardo-Andreatta/terminal-claude-token-usage"
   url "https://github.com/Bernardo-Andreatta/terminal-claude-token-usage/archive/refs/tags/v1.1.0.tar.gz"
-  sha256 "PENDING_SET_AFTER_TAG"
+  sha256 "6223c353068e22f6e24eec6aeffef8d1ead67f3a533c15fcb384907ea04761b9"
   license "MIT"
   head "https://github.com/Bernardo-Andreatta/terminal-claude-token-usage.git", branch: "main"
 
