@@ -6,7 +6,7 @@
   "depends": "main/python",
   "installer": {
     "script": [
-      "python -m pip install claude-tokens==$version --target \"$dir\\Lib\" --quiet",
+      "python -m pip install stradiz-claude-tokens==$version --target \"$dir\\Lib\" --quiet",
       "Set-Content \"$dir\\claude-tokens.cmd\" \"@python -m claude_tokens %*\""
     ]
   },
