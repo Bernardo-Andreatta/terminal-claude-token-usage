@@ -41,16 +41,17 @@ scoop install claude-tokens
 
 > Requires [Scoop](https://scoop.sh) and Python installed (`scoop install python`).
 >
-> Or use **pipx** (cross-platform, needs Python): `pipx install git+https://github.com/Bernardo-Andreatta/terminal-claude-token-usage.git` — install pipx with `py -m pip install --user pipx`.
+> Or use **pipx** (cross-platform, needs Python): `pipx install stradiz-claude-tokens` — install pipx with `py -m pip install --user pipx`.
 
 ### Linux — pipx
 
 ```bash
-pipx install git+https://github.com/Bernardo-Andreatta/terminal-claude-token-usage.git
+pipx install stradiz-claude-tokens
 ```
 
 > `pipx` isolates the install and ensures `claude-tokens` lands in your PATH automatically.
 > Install pipx: `sudo apt install pipx` · `sudo pacman -S python-pipx` · `pip install pipx`
+> Unreleased `main`: `pipx install git+https://github.com/Bernardo-Andreatta/terminal-claude-token-usage.git`
 
 ### Any platform — from source
 
