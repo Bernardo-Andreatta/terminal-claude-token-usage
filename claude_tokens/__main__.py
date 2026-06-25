@@ -16,15 +16,78 @@ limits = {
     "weekly":  int(os.environ.get("CLAUDE_WEEKLY_LIMIT",  "0")),
 }
 
-PRICE_INPUT       = float(os.environ.get("CLAUDE_PRICE_INPUT",       "3.00"))
-PRICE_OUTPUT      = float(os.environ.get("CLAUDE_PRICE_OUTPUT",      "15.00"))
-PRICE_CACHE_WRITE = float(os.environ.get("CLAUDE_PRICE_CACHE_WRITE", "3.75"))
-PRICE_CACHE_READ  = float(os.environ.get("CLAUDE_PRICE_CACHE_READ",  "0.30"))
+# Bumped when the quota math changes in a way that invalidates saved limits/weights.
+# Calibration writes the current marker; a mismatch nudges the user to recalibrate.
+PRICING_MODEL = "v2-cost"
 
-# Session and weekly use different cache-read weights — claude.ai appears to count
-# cache reads for session quota (~10% weight) but not for weekly quota.
-WEIGHT_CACHE_READ_SESSION = float(os.environ.get("CLAUDE_WEIGHT_CACHE_READ_SESSION", "0.1"))
-WEIGHT_CACHE_READ_WEEKLY  = float(os.environ.get("CLAUDE_WEIGHT_CACHE_READ_WEEKLY",  "0.0"))
+def _needs_recalibration() -> bool:
+    """True for users whose saved limits/weights predate the cost-weighted model."""
+    if is_first_run():                                  # onboarding handles new users
+        return False
+    if os.environ.get("CLAUDE_PRICING_MODEL") == PRICING_MODEL:
+        return False
+    return bool(limits["session"] or limits["weekly"]
+                or "CLAUDE_WEIGHT_CACHE_READ_SESSION" in os.environ)
+
+LEGACY_CALIBRATION = _needs_recalibration()
+
+def _envf(name, default):
+    try:    return float(os.environ.get(name, default))
+    except (TypeError, ValueError): return float(default)
+
+# ---------------------------------------------------------------------------
+# Pricing & quota weighting
+# ---------------------------------------------------------------------------
+# Claude Code logs the real model and the cache-TTL split per message, so usage
+# is priced per model and per cache tier instead of one flat rate.
+#
+#   input  $/Mtok, output $/Mtok   (current published rates)
+PRICING = {
+    "opus":   (5.00, 25.00),
+    "sonnet": (3.00, 15.00),
+    "haiku":  (1.00,  5.00),
+    "fable":  (10.00, 50.00),
+    "mythos": (10.00, 50.00),
+}
+PRICING_DEFAULT = "sonnet"   # fallback when a record's model is unrecognised
+
+def _model_key(model: str) -> str:
+    m = (model or "").lower()
+    for k in ("opus", "haiku", "fable", "mythos", "sonnet"):
+        if k in m:
+            return k
+    return PRICING_DEFAULT
+
+# Cache pricing is a fixed multiple of a model's input price (same ratio every model):
+#   5-minute cache write = 1.25x,  1-hour cache write = 2x,  cache read = 0.1x.
+CACHE_WRITE_5M_MULT = _envf("CLAUDE_CACHE_WRITE_5M_MULT", "1.25")
+CACHE_WRITE_1H_MULT = _envf("CLAUDE_CACHE_WRITE_1H_MULT", "2.00")
+CACHE_READ_MULT     = _envf("CLAUDE_CACHE_READ_MULT",     "0.10")
+
+# Quota is an opaque weighted token count, not raw tokens. The non-cache-read
+# portion is weighted by true cost (output ~5x input, 1h cache-write 2x input,
+# per model), expressed in BASE_PRICE-normalised "input-equivalent tokens" so the
+# displayed magnitude stays token-like. Cache reads are the one component the
+# quota discounts below cost — and by different amounts for session vs weekly —
+# so their weight stays calibratable.
+BASE_PRICE = _envf("CLAUDE_BASE_PRICE", "3.00")  # $/Mtok used to normalise weighted tokens
+
+# Dimensionless cache-read weight (1.0 = counts at full cost, 0.0 = ignored).
+# Defaults are principled starting points; calibration learns the real values.
+WEIGHT_CACHE_READ_SESSION = _envf("CLAUDE_WEIGHT_CACHE_READ_SESSION", "1.0")
+WEIGHT_CACHE_READ_WEEKLY  = _envf("CLAUDE_WEIGHT_CACHE_READ_WEEKLY",  "0.0")
+
+
+def _rec_units(mk, inp, out, cw5, cw1, cr):
+    """Return (x, y): cost-equivalent tokens for the non-cache-read part (x) and
+    the cache-read part (y), normalised to BASE_PRICE input tokens. Quota total
+    is then x + w*y; total cost ($) is (x + y) * BASE_PRICE / 1e6."""
+    pin, pout = PRICING.get(mk, PRICING[PRICING_DEFAULT])
+    x = (inp * pin + out * pout
+         + cw5 * pin * CACHE_WRITE_5M_MULT
+         + cw1 * pin * CACHE_WRITE_1H_MULT) / BASE_PRICE
+    y = (cr * pin * CACHE_READ_MULT) / BASE_PRICE
+    return x, y
 WEEK_RESET_UTC_HOUR = 15  # Tuesday 15:00 UTC = noon US Eastern (Anthropic's observed reset time)
 # Offset applied to computed session start (positive = session started earlier than JSONL shows).
 # Useful when sessions are started via claude.ai web before switching to CLI.
@@ -74,9 +137,9 @@ def fmt(n):
     if n >= 1_000:     return f"{n/1_000:.1f}k"
     return str(n)
 
-def calc_cost(inp, out, cw, cr):
-    return (inp * PRICE_INPUT + out * PRICE_OUTPUT +
-            cw * PRICE_CACHE_WRITE + cr * PRICE_CACHE_READ) / 1_000_000
+def cost_usd(x, y):
+    """Total cost in USD from cost-equivalent token sums (see _rec_units)."""
+    return (x + y) * BASE_PRICE / 1_000_000
 
 def pbar(used, limit, width, col):
     if limit <= 0:
@@ -99,14 +162,15 @@ def week_start_utc():
 _file_cache: dict[str, tuple] = {}
 
 def _read_file_records(path: str) -> list:
-    """Return cached (dt, inp, out, cw, cr) tuples; re-reads only if file changed."""
+    """Return cached (dt, msg_id, model_key, inp, out, cw5, cw1, cr) tuples;
+    re-reads only if the file changed. Raw token counts are cached (not weighted
+    values) so price/weight changes take effect without rescanning."""
     try:
         st = os.stat(path)
         cached = _file_cache.get(path)
         if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
             return cached[2]
         records = []
-        seen_msg_ids: set = set()
         with open(path, encoding="utf-8", errors="ignore") as fh:
             for raw in fh:
                 raw = raw.strip()
@@ -118,12 +182,6 @@ def _read_file_records(path: str) -> list:
                 if not isinstance(msg, dict): continue
                 usage = msg.get("usage")
                 if not isinstance(usage, dict) or not ts: continue
-                # Deduplicate: Claude Code writes the same API response 2-3x per message
-                msg_id = msg.get("id")
-                if msg_id:
-                    if msg_id in seen_msg_ids:
-                        continue
-                    seen_msg_ids.add(msg_id)
                 try:
                     dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
                 except (TypeError, ValueError):
@@ -133,7 +191,20 @@ def _read_file_records(path: str) -> list:
                 out = usage.get("output_tokens", 0)
                 cw  = usage.get("cache_creation_input_tokens", 0)
                 cr  = usage.get("cache_read_input_tokens", 0)
-                records.append((dt, inp, out, cw, cr))
+                # Split cache writes into 5m / 1h tiers (different prices). When the
+                # breakdown is absent, fall back to 1h (Claude Code's default tier).
+                cc = usage.get("cache_creation")
+                if isinstance(cc, dict):
+                    cw5 = cc.get("ephemeral_5m_input_tokens", 0)
+                    cw1 = cc.get("ephemeral_1h_input_tokens", 0)
+                    if cw5 + cw1 == 0 and cw:
+                        cw1 = cw
+                else:
+                    cw5, cw1 = 0, cw
+                if inp == out == cw == cr == 0:
+                    continue  # synthetic / no-op records carry no usage
+                mk = _model_key(msg.get("model"))
+                records.append((dt, msg.get("id"), mk, inp, out, cw5, cw1, cr))
         _file_cache[path] = (st.st_mtime, st.st_size, records)
         return records
     except (OSError, PermissionError):
@@ -166,24 +237,37 @@ def collect():
         all_records.extend(_read_file_records(path))
     all_records.sort(key=lambda e: e[0])
 
+    # Deduplicate across the whole scan: Claude Code writes the same API response
+    # 2-3x, and resumed/branched sessions copy prior records into a new file.
+    seen_ids: set = set()
+    deduped = []
+    for r in all_records:
+        mid = r[1]
+        if mid is not None:
+            if mid in seen_ids:
+                continue
+            seen_ids.add(mid)
+        deduped.append(r)
+    all_records = deduped
+
     recent = [r for r in all_records if r[0] >= cutoff_scan]
     sess_start = _find_session_start(recent, now)
     if SESSION_OFFSET_SECS and sess_start < now:
         sess_start -= timedelta(seconds=SESSION_OFFSET_SECS)
 
-    sess = defaultdict(int)
-    week = defaultdict(int)
+    sess = defaultdict(float)
+    week = defaultdict(float)
 
-    for dt, inp, out, cw, cr in all_records:
+    def add(bucket, x, y):
+        bucket["x"] += x; bucket["y"] += y; bucket["msgs"] += 1
+
+    for dt, _mid, mk, inp, out, cw5, cw1, cr in all_records:
         if dt < cutoff_week:
             continue
-        week["input"]  += inp; week["output"] += out
-        week["cw"]     += cw;  week["cr"]     += cr
-        week["msgs"]   += 1
+        x, y = _rec_units(mk, inp, out, cw5, cw1, cr)
+        add(week, x, y)
         if dt >= sess_start:
-            sess["input"]  += inp; sess["output"] += out
-            sess["cw"]     += cw;  sess["cr"]     += cr
-            sess["msgs"]   += 1
+            add(sess, x, y)
 
     sess_reset = (sess_start + timedelta(hours=5)).astimezone()
     return sess, week, sess_reset
@@ -210,10 +294,10 @@ def render(sess, week, sess_reset):
         sess_sublabel = f"resets in {sess_rem_h}h {sess_rem_m:02d}m"
 
     def section(label, sublabel, data, limit, col, cr_weight=0.0):
-        inp, out, cw, cr = data["input"], data["output"], data["cw"], data["cr"]
-        total = inp + out + cw + round(cr * cr_weight)
-        usd   = calc_cost(inp, out, cw, cr)
-        msgs  = data["msgs"]
+        x, y  = data["x"], data["y"]
+        total = round(x + cr_weight * y)
+        usd   = cost_usd(x, y)
+        msgs  = int(data["msgs"])
 
         line(c(f"  {label}", B + col) + c(f"  {sublabel}", D))
         line(f"  {pbar(total, limit, BAR_W, col)}")
@@ -243,7 +327,9 @@ def render(sess, week, sess_reset):
     print(f"{MARGIN}╰{'─' * (W + 2)}╯", flush=True)
 
     hint = c(f"  refresh {REFRESH_SECS}s · q quit · r refresh · c calibrate · t colors", D)
-    if limits["session"] == 0 or limits["weekly"] == 0:
+    if LEGACY_CALIBRATION:
+        hint += c("  |  ", D) + c("⚠ pricing model updated — press c to recalibrate", YE)
+    elif limits["session"] == 0 or limits["weekly"] == 0:
         hint += c("  |  set CLAUDE_SESSION_LIMIT / CLAUDE_WEEKLY_LIMIT", D)
     print(f"{MARGIN}{hint}", flush=True)
 
@@ -311,7 +397,7 @@ def show_onboarding():
 
     print(f"{M}╭{'─' * (OW + 2)}╮", flush=True)
     row()
-    row(c("  claude-tokens", B) + c("  v1.0.0", D))
+    row(c("  claude-tokens", B) + c("  v1.1.0", D))
     row()
     rule()
     row()
@@ -397,9 +483,10 @@ def main():
                     from claude_tokens.calibrate import run as calibrate_run
                     result = calibrate_run()
                     if result:
-                        global WEIGHT_CACHE_READ_SESSION
+                        global WEIGHT_CACHE_READ_SESSION, LEGACY_CALIBRATION
                         limits["session"], limits["weekly"] = result
-                        WEIGHT_CACHE_READ_SESSION = float(os.environ.get("CLAUDE_WEIGHT_CACHE_READ_SESSION", "0.1"))
+                        WEIGHT_CACHE_READ_SESSION = _envf("CLAUDE_WEIGHT_CACHE_READ_SESSION", "1.0")
+                        LEGACY_CALIBRATION = False
                     try:
                         fd, old_tty = setup_terminal()
                     except Exception:

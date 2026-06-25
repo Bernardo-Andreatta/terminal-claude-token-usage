@@ -120,21 +120,23 @@ Accepts color names (`cyan`, `bright_cyan`, `magenta`, …) or raw ANSI codes (`
 | `CLAUDE_WEEKLY_LIMIT` | `0` | Weekly token limit (0 = no bar cap) |
 | `CLAUDE_REFRESH` | `15` | Refresh interval in seconds |
 | `CLAUDE_SESSION_OFFSET_SECS` | `0` | Shift session start earlier (useful when starting on claude.ai web) |
-| `CLAUDE_WEIGHT_CACHE_READ_SESSION` | `0.1` | Cache read weight for session quota |
-| `CLAUDE_WEIGHT_CACHE_READ_WEEKLY` | `0.0` | Cache read weight for weekly quota |
-| `CLAUDE_PRICE_INPUT` | `3.00` | Input token price per 1M |
-| `CLAUDE_PRICE_OUTPUT` | `15.00` | Output token price per 1M |
-| `CLAUDE_PRICE_CACHE_WRITE` | `3.75` | Cache write price per 1M |
-| `CLAUDE_PRICE_CACHE_READ` | `0.30` | Cache read price per 1M |
+| `CLAUDE_WEIGHT_CACHE_READ_SESSION` | `1.0` | Cache-read quota weight, session (1.0 = full cost, 0 = ignored; calibration learns it) |
+| `CLAUDE_WEIGHT_CACHE_READ_WEEKLY` | `0.0` | Cache-read quota weight, weekly |
+| `CLAUDE_BASE_PRICE` | `3.00` | $/1M input price used to normalize weighted tokens |
+| `CLAUDE_CACHE_WRITE_5M_MULT` | `1.25` | 5-min cache-write price as a multiple of input |
+| `CLAUDE_CACHE_WRITE_1H_MULT` | `2.00` | 1-hour cache-write price as a multiple of input |
+| `CLAUDE_CACHE_READ_MULT` | `0.10` | Cache-read price as a multiple of input |
 | `CLAUDE_MARGIN` | `2` | Left margin spaces in the TUI |
 | `CLAUDE_WARN_COLORS` | `1` | Set to `0` to disable warning color shifts |
 
 ## How it works
 
-Reads `~/.claude/projects/**/*.jsonl` — the JSONL logs Claude Code writes per conversation. Aggregates `usage` fields from API response records, deduplicating by message ID to avoid double-counting.
+Reads `~/.claude/projects/**/*.jsonl` — the JSONL logs Claude Code writes per conversation. Aggregates `usage` fields from API response records, deduplicating by message ID across the whole scan to avoid double-counting (Claude Code rewrites each response 2–3×, and resumed sessions copy prior records).
+
+**Cost-weighted tokens:** quota is an opaque weighted token count, not a raw sum. Each record is weighted by its true cost using the real model (`claude-opus-*`, `claude-sonnet-*`, `claude-haiku-*`, …) and cache tier logged per message — so output (~5× input), 1-hour cache writes (2×), 5-minute writes (1.25×), and cache reads (0.1×) each count for what they actually consume. Weighted tokens are normalized to `CLAUDE_BASE_PRICE` input tokens to keep the displayed magnitude token-like. This makes a calibration done in a Sonnet-heavy week transfer to an Opus-heavy one — the flat sum it replaced did not.
 
 **Session window:** detected by simulating 5-hour windows through the last 12 hours of activity. A new session opens whenever an event arrives after the previous 5-hour window has closed — matching claude.ai's fixed session model.
 
 **Weekly window:** resets Tuesday 15:00 UTC (matching claude.ai's observed reset schedule).
 
-**Cache read accounting:** session and weekly quotas use different weights. Session counts cache reads at ~10%; weekly ignores them. If your percentages drift from claude.ai, run `c` to recalibrate.
+**Cache-read accounting:** the one component the quota discounts below cost — session and weekly use different weights (session counts them; weekly ignores them), so it stays calibratable. If your percentages drift from claude.ai, run `c` to recalibrate.

@@ -3,7 +3,9 @@
 
 import json, os, statistics
 from datetime import datetime
-from claude_tokens.__main__ import collect, WEIGHT_CACHE_READ_SESSION, WEIGHT_CACHE_READ_WEEKLY
+from claude_tokens.__main__ import (
+    collect, WEIGHT_CACHE_READ_SESSION, WEIGHT_CACHE_READ_WEEKLY, PRICING_MODEL,
+)
 from claude_tokens.config import offer_save
 
 CALIB_PATH  = os.path.expanduser("~/.claude/claude-tokens-calibrations.json")
@@ -109,12 +111,14 @@ def run():
     print("Collecting current token counts...")
     sess, week, _ = collect()
 
-    sess_x = sess["input"] + sess["output"] + sess["cw"]
-    sess_y = sess["cr"]
+    # x = cost-weighted non-cache-read tokens, y = cost-weighted cache reads
+    # (see _rec_units). The learned weight scales y, exactly as before.
+    sess_x = sess["x"]
+    sess_y = sess["y"]
     sess_w = sess_x + round(sess_y * WEIGHT_CACHE_READ_SESSION)
 
-    week_x = week["input"] + week["output"] + week["cw"]
-    week_y = week["cr"]
+    week_x = week["x"]
+    week_y = week["y"]
     week_w = week_x + round(week_y * WEIGHT_CACHE_READ_WEEKLY)
 
     print(f"  Session tokens: {fmt(sess_w)}")
@@ -176,6 +180,7 @@ def run():
     saves = {
         "CLAUDE_SESSION_LIMIT": str(sess_limit),
         "CLAUDE_WEEKLY_LIMIT":  str(week_limit),
+        "CLAUDE_PRICING_MODEL": PRICING_MODEL,
     }
 
     if w_learned is not None and n_pairs >= 1:
