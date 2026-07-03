@@ -49,14 +49,36 @@ PRICING = {
     "fable":  (10.00, 50.00),
     "mythos": (10.00, 50.00),
 }
-PRICING_DEFAULT = "sonnet"   # fallback when a record's model is unrecognised
+# Fallback when a record's model is unrecognised (synthetic records, sidechains).
+# Settable in the TUI ('m') so unknown records are priced like the model you use.
+def _default_model() -> str:
+    m = os.environ.get("CLAUDE_MODEL_DEFAULT", "").strip().lower()
+    return m if m in PRICING else "sonnet"
+
+PRICING_DEFAULT = _default_model()
 
 def _model_key(model: str) -> str:
     m = (model or "").lower()
     for k in ("opus", "haiku", "fable", "mythos", "sonnet"):
         if k in m:
             return k
-    return PRICING_DEFAULT
+    return ""  # unrecognised — resolved against PRICING_DEFAULT at pricing time
+
+# Reasoning-effort prior: a multiplier on output-token quota cost. Anthropic's
+# quota weighting per effort level is unpublished; these are tunable priors and
+# calibration re-anchors limits, so absolute error washes out. Set in TUI ('m').
+EFFORT_LEVELS = ("low", "medium", "high")
+EFFORT_MULTS = {
+    "low":    _envf("CLAUDE_EFFORT_MULT_LOW",    "0.85"),
+    "medium": _envf("CLAUDE_EFFORT_MULT_MEDIUM", "1.00"),
+    "high":   _envf("CLAUDE_EFFORT_MULT_HIGH",   "1.15"),
+}
+
+def _effort_level() -> str:
+    e = os.environ.get("CLAUDE_EFFORT", "").strip().lower()
+    return e if e in EFFORT_MULTS else "medium"
+
+EFFORT = _effort_level()
 
 # Cache pricing is a fixed multiple of a model's input price (same ratio every model):
 #   5-minute cache write = 1.25x,  1-hour cache write = 2x,  cache read = 0.1x.
@@ -82,8 +104,8 @@ def _rec_units(mk, inp, out, cw5, cw1, cr):
     """Return (x, y): cost-equivalent tokens for the non-cache-read part (x) and
     the cache-read part (y), normalised to BASE_PRICE input tokens. Quota total
     is then x + w*y; total cost ($) is (x + y) * BASE_PRICE / 1e6."""
-    pin, pout = PRICING.get(mk, PRICING[PRICING_DEFAULT])
-    x = (inp * pin + out * pout
+    pin, pout = PRICING.get(mk) or PRICING[PRICING_DEFAULT]
+    x = (inp * pin + out * pout * EFFORT_MULTS[EFFORT]
          + cw5 * pin * CACHE_WRITE_5M_MULT
          + cw1 * pin * CACHE_WRITE_1H_MULT) / BASE_PRICE
     y = (cr * pin * CACHE_READ_MULT) / BASE_PRICE
@@ -230,7 +252,10 @@ def _find_session_start(events: list, now: datetime) -> datetime:
 def collect():
     now         = datetime.now(timezone.utc)
     cutoff_week = week_start_utc()
-    cutoff_scan = now - timedelta(hours=12)
+    # 7d lookback for the 5h-window simulation: window chains realign at any
+    # >=5h gap, and a week of history virtually always contains one, so the
+    # computed session start matches Anthropic's regardless of scan truncation.
+    cutoff_scan = now - timedelta(days=7)
 
     all_records: list = []
     for path in glob.glob(os.path.join(PROJECTS_DIR, "**", "*.jsonl"), recursive=True):
@@ -319,6 +344,7 @@ def render(sess, week, sess_reset):
     print(f"{MARGIN}{c('  ~ estimates only · Anthropic usage API is private', D)}", flush=True)
     print(f"{MARGIN}╭{'─' * (W + 2)}╮", flush=True)
     line(c(f"  {now_local.strftime('%a %Y-%m-%d  %H:%M:%S')} Claude Tokens", D))
+    line(c(f"  model {PRICING_DEFAULT} · effort {EFFORT}", D))
     line()
     section("Session", sess_sublabel, sess, limits["session"], CY, cr_weight=WEIGHT_CACHE_READ_SESSION)
     line()
@@ -326,7 +352,7 @@ def render(sess, week, sess_reset):
     line()
     print(f"{MARGIN}╰{'─' * (W + 2)}╯", flush=True)
 
-    hint = c(f"  refresh {REFRESH_SECS}s · q quit · r refresh · c calibrate · t colors", D)
+    hint = c(f"  refresh {REFRESH_SECS}s · q quit · r refresh · c calibrate · m model · t colors", D)
     if LEGACY_CALIBRATION:
         hint += c("  |  ", D) + c("⚠ pricing model updated — press c to recalibrate", YE)
     elif limits["session"] == 0 or limits["weekly"] == 0:
@@ -487,6 +513,23 @@ def main():
                         limits["session"], limits["weekly"] = result
                         WEIGHT_CACHE_READ_SESSION = _envf("CLAUDE_WEIGHT_CACHE_READ_SESSION", "1.0")
                         LEGACY_CALIBRATION = False
+                    try:
+                        fd, old_tty = setup_terminal()
+                    except Exception:
+                        pass
+                    sys.stdout.write(HIDE_CUR)
+                    sys.stdout.flush()
+                    force = True
+                if ch in (b'm', b'M'):
+                    restore_terminal(fd, old_tty)
+                    sys.stdout.write(SHOW_CUR)
+                    sys.stdout.flush()
+                    from claude_tokens.models import run as models_run
+                    result = models_run()
+                    if result:
+                        global PRICING_DEFAULT, EFFORT
+                        PRICING_DEFAULT = _default_model()
+                        EFFORT = _effort_level()
                     try:
                         fd, old_tty = setup_terminal()
                     except Exception:

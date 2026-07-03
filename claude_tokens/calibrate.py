@@ -3,9 +3,7 @@
 
 import json, os, statistics
 from datetime import datetime
-from claude_tokens.__main__ import (
-    collect, WEIGHT_CACHE_READ_SESSION, WEIGHT_CACHE_READ_WEEKLY, PRICING_MODEL,
-)
+from claude_tokens.__main__ import collect, PRICING_MODEL, _effort_level, _envf
 from claude_tokens.config import offer_save
 
 CALIB_PATH  = os.path.expanduser("~/.claude/claude-tokens-calibrations.json")
@@ -47,12 +45,18 @@ def _implied_weight(x1, y1, p1, x2, y2, p2):
     return w if 0.0 <= w <= 2.0 else None
 
 
-def _learn_weight(history):
-    """Pairwise median w from all combinations. Returns (w, n_pairs)."""
+def _learn_weight(history, effort):
+    """Pairwise median w from all combinations. Returns (w, n_pairs).
+
+    Only pairs entries recorded under the current pricing model AND effort
+    level: x/y from other regimes are in different units and would bias w."""
+    usable = [h for h in history
+              if h.get("pricing_model") == PRICING_MODEL
+              and h.get("effort", "medium") == effort]
     estimates = []
-    for i in range(len(history)):
-        for j in range(i + 1, len(history)):
-            a, b = history[i], history[j]
+    for i in range(len(usable)):
+        for j in range(i + 1, len(usable)):
+            a, b = usable[i], usable[j]
             w = _implied_weight(a["sess_x"], a["sess_y"], a["sess_pct"],
                                 b["sess_x"], b["sess_y"], b["sess_pct"])
             if w is not None:
@@ -90,6 +94,8 @@ def _show_drift(prev, sess_limit, week_limit):
         elapsed = datetime.now() - datetime.fromisoformat(prev["ts"])
     except (KeyError, ValueError):
         return
+    if not prev.get("sess_limit") or not prev.get("week_limit"):
+        return
     mins  = int(elapsed.total_seconds() / 60)
     label = f"{mins}m" if mins < 60 else f"{mins // 60}h {mins % 60:02d}m"
     sess_d = (sess_limit - prev["sess_limit"]) / prev["sess_limit"] * 100
@@ -111,15 +117,21 @@ def run():
     print("Collecting current token counts...")
     sess, week, _ = collect()
 
+    # Read weights from env at runtime — a prior calibration in this TUI
+    # session may have updated them after this module was imported.
+    w_sess = _envf("CLAUDE_WEIGHT_CACHE_READ_SESSION", "1.0")
+    w_week = _envf("CLAUDE_WEIGHT_CACHE_READ_WEEKLY",  "0.0")
+    effort = _effort_level()
+
     # x = cost-weighted non-cache-read tokens, y = cost-weighted cache reads
     # (see _rec_units). The learned weight scales y, exactly as before.
     sess_x = sess["x"]
     sess_y = sess["y"]
-    sess_w = sess_x + round(sess_y * WEIGHT_CACHE_READ_SESSION)
+    sess_w = sess_x + round(sess_y * w_sess)
 
     week_x = week["x"]
     week_y = week["y"]
-    week_w = week_x + round(week_y * WEIGHT_CACHE_READ_WEEKLY)
+    week_w = week_x + round(week_y * w_week)
 
     print(f"  Session tokens: {fmt(sess_w)}")
     print(f"  Weekly  tokens: {fmt(week_w)}\n")
@@ -144,18 +156,20 @@ def run():
 
     # Learn from history + this point to determine final weight before computing limit
     entry_draft = {
-        "ts":         datetime.now().isoformat(),
-        "sess_x":     sess_x, "sess_y":   sess_y, "sess_pct": sess_pct,
-        "week_x":     week_x, "week_y":   week_y, "week_pct": week_pct,
+        "ts":            datetime.now().isoformat(),
+        "pricing_model": PRICING_MODEL,
+        "effort":        effort,
+        "sess_x":        sess_x, "sess_y":   sess_y, "sess_pct": sess_pct,
+        "week_x":        week_x, "week_y":   week_y, "week_pct": week_pct,
     }
     all_history = history + [{**entry_draft, "sess_limit": 0, "week_limit": 0}]
-    w_learned, n_pairs = _learn_weight(all_history)
+    w_learned, n_pairs = _learn_weight(all_history, effort)
     n_pts = len(all_history)
 
     # Determine the weight that will be in effect after saving
-    final_w = WEIGHT_CACHE_READ_SESSION
+    final_w = w_sess
     weight_changed = False
-    if w_learned is not None and n_pairs >= 1 and abs(w_learned - WEIGHT_CACHE_READ_SESSION) >= 0.005:
+    if w_learned is not None and n_pairs >= 1 and abs(w_learned - w_sess) >= 0.005:
         weight_changed = True
         final_w = w_learned
 
@@ -189,7 +203,7 @@ def run():
         if weight_changed:
             saves["CLAUDE_WEIGHT_CACHE_READ_SESSION"] = f"{w_learned:.4f}"
             os.environ["CLAUDE_WEIGHT_CACHE_READ_SESSION"] = f"{w_learned:.4f}"
-            print(f"    (was: {WEIGHT_CACHE_READ_SESSION:.4f}, limit adjusted to keep {sess_pct*100:.0f}%)")
+            print(f"    (was: {w_sess:.4f}, limit adjusted to keep {sess_pct*100:.0f}%)")
         else:
             print(f"    Weight well-calibrated.")
 

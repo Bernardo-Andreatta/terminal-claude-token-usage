@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stradiz-claude-tokens"
-version = "1.1.0"
+version = "1.2.0"
 description = "Live terminal TUI tracking Claude Code token usage and cost estimates"
 readme = "README.md"
 license = { text = "MIT" }
@@ -34,6 +34,7 @@ Repository = "https://github.com/Bernardo-Andreatta/terminal-claude-token-usage"
 claude-tokens = "claude_tokens.__main__:main"
 claude-tokens-calibrate = "claude_tokens.calibrate:main"
 claude-tokens-colors    = "claude_tokens.colors:main"
+claude-tokens-models    = "claude_tokens.models:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

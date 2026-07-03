@@ -67,10 +67,11 @@ pipx install .
 claude-tokens            # interactive TUI
 claude-tokens-calibrate  # standalone calibration wizard
 claude-tokens-colors     # standalone color picker
+claude-tokens-models     # standalone model/effort selector
 python -m claude_tokens  # same as claude-tokens, via module
 ```
 
-Keys: `q` quit · `r` force refresh · `c` calibrate limits · `t` pick colors
+Keys: `q` quit · `r` force refresh · `c` calibrate limits · `m` model & effort · `t` pick colors
 
 ## Configuration
 
@@ -98,6 +99,13 @@ Press `c` in the TUI (or run `claude-tokens-calibrate` standalone) while claude.
 ```
 
 Limits apply immediately in the running TUI. The wizard then prompts to save to `~/.claude/claude-tokens.conf`.
+
+### Model & effort
+
+Press `m` in the TUI (or run `claude-tokens-models` standalone) to select the model and reasoning effort level you currently use.
+
+- **Model** sets the pricing fallback for records that don't log a recognizable model (synthetic records, sidechains). Records that log a real model are always priced by that model — this only fixes the unknowns, which otherwise default to Sonnet pricing (a 3.3× underestimate if you actually use Fable).
+- **Effort** applies a prior multiplier to output-token quota cost (`low` 0.85× · `medium` 1.0× · `high` 1.15×). Anthropic doesn't publish per-effort quota weighting, so these are tunable starting points (`CLAUDE_EFFORT_MULT_*`); recalibrate after changing them so limits re-anchor.
 
 ### Colors
 
@@ -129,6 +137,11 @@ Accepts color names (`cyan`, `bright_cyan`, `magenta`, …) or raw ANSI codes (`
 | `CLAUDE_CACHE_WRITE_5M_MULT` | `1.25` | 5-min cache-write price as a multiple of input |
 | `CLAUDE_CACHE_WRITE_1H_MULT` | `2.00` | 1-hour cache-write price as a multiple of input |
 | `CLAUDE_CACHE_READ_MULT` | `0.10` | Cache-read price as a multiple of input |
+| `CLAUDE_MODEL_DEFAULT` | `sonnet` | Pricing fallback for records without a recognizable model |
+| `CLAUDE_EFFORT` | `medium` | Reasoning effort level (`low`/`medium`/`high`) |
+| `CLAUDE_EFFORT_MULT_LOW` | `0.85` | Output quota multiplier at low effort |
+| `CLAUDE_EFFORT_MULT_MEDIUM` | `1.00` | Output quota multiplier at medium effort |
+| `CLAUDE_EFFORT_MULT_HIGH` | `1.15` | Output quota multiplier at high effort |
 | `CLAUDE_MARGIN` | `2` | Left margin spaces in the TUI |
 | `CLAUDE_WARN_COLORS` | `1` | Set to `0` to disable warning color shifts |
 
